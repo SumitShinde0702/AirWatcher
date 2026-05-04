@@ -1,0 +1,26 @@
+# Executables and binaries
+*.exe
+*.out
+*.dll
+*.so
+*.dylib
+
+# Compiler/linker artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.ilk
+*.pdb
+
+# Build directories
+build/
+cmake-build-*/
+
+# Runtime/local generated files
+csv_files/accounts.csv
+
+# IDE/OS noise
+.DS_Store
+Thumbs.db
