@@ -60,9 +60,16 @@ void CliApp::runSession(const UserAccount& account) {
             std::cout << "Stop  (YYYY-MM-DD HH:MM:SS): "; std::getline(std::cin, stopStr);
 
             utils::ScopedTimer timer;
-            auto mean = analysis.meanAqiInArea(lat, lon, radius,
+            auto meanStats = analysis.meanAqiInAreaWithStats(lat, lon, radius,
                 utils::parseTimestamp(startStr), utils::parseTimestamp(stopStr));
-            std::cout << (mean.has_value() ? "Mean AQI: " + std::to_string(*mean) : "No data for area/time") << "\n";
+            if (!meanStats.has_value()) {
+                std::cout << "No data for area/time\n";
+            } else {
+                std::cout << "Mean AQI: " << meanStats->meanAqi << "\n";
+                std::cout << "Working: mean = sum(AQI points) / count = "
+                          << meanStats->sumAqi << " / " << meanStats->pointCount
+                          << " (from " << meanStats->sensorCount << " sensors)\n";
+            }
             std::cout << "Duration: " << timer.elapsedMs() << " ms\n";
         } else if (choice == "2") {
             std::string ref, startStr, stopStr;
@@ -76,6 +83,16 @@ void CliApp::runSession(const UserAccount& account) {
             std::cout << "Top 5 similar sensors:\n";
             for (std::size_t i = 0; i < ranking.size() && i < 5; ++i) {
                 std::cout << i + 1 << ". " << ranking[i].sensorId << " score=" << ranking[i].score << "\n";
+            }
+            if (!ranking.empty()) {
+                auto debug = analysis.explainSimilarity(ref, ranking.front().sensorId,
+                    utils::parseTimestamp(startStr), utils::parseTimestamp(stopStr));
+                if (debug.has_value()) {
+                    std::cout << "Working (top match): score = dot / (sqrt(normRef) * sqrt(normOther)) = "
+                              << debug->dotProduct << " / (sqrt(" << debug->normReference
+                              << ") * sqrt(" << debug->normCompared << "))\n";
+                    std::cout << "Overlap timestamps used: " << debug->overlapCount << "\n";
+                }
             }
             std::cout << "Duration: " << timer.elapsedMs() << " ms\n";
         } else if (choice == "3") {
@@ -115,9 +132,23 @@ void CliApp::runSession(const UserAccount& account) {
         } else if (choice == "6" && account.role == Role::Admin) {
             std::string userId;
             std::cout << "Private user ID to flag unreliable: "; std::getline(std::cin, userId);
-            authService_.markUserUnreliable(userId);
-            analysis.setExcludedUsers(authService_.unreliableUsers());
-            std::cout << "User flagged and excluded from future analytics.\n";
+            bool knownPrivateUser = false;
+            for (const auto& entry : repository_.data().privateUserSensors) {
+                if (entry.userId == userId) {
+                    knownPrivateUser = true;
+                    break;
+                }
+            }
+
+            if (!knownPrivateUser) {
+                std::cout << "User not found in private-user registry.\n";
+            } else if (authService_.unreliableUsers().find(userId) != authService_.unreliableUsers().end()) {
+                std::cout << "User is already flagged as unreliable.\n";
+            } else {
+                authService_.markUserUnreliable(userId);
+                analysis.setExcludedUsers(authService_.unreliableUsers());
+                std::cout << "User flagged and excluded from future analytics.\n";
+            }
         } else if (choice == "7") {
             const auto points = analysis.pointsByUser();
             for (const auto& [user, score] : points) {

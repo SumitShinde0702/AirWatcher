@@ -79,7 +79,17 @@ std::vector<SensorAqiPoint> AirAnalysisService::sensorSeries(const std::string& 
 
 std::optional<double> AirAnalysisService::meanAqiInArea(double latitude, double longitude,
     double radiusKm, std::time_t start, std::time_t stop) {
+    auto stats = meanAqiInAreaWithStats(latitude, longitude, radiusKm, start, stop);
+    if (!stats.has_value()) {
+        return std::nullopt;
+    }
+    return stats->meanAqi;
+}
+
+std::optional<MeanAqiStats> AirAnalysisService::meanAqiInAreaWithStats(double latitude, double longitude,
+    double radiusKm, std::time_t start, std::time_t stop) {
     std::vector<double> aqiValues;
+    std::size_t sensorsContributing = 0;
 
     for (const auto& sensor : dataStore_.sensors) {
         if (!sensorAllowed(sensor.id)) continue;
@@ -87,14 +97,24 @@ std::optional<double> AirAnalysisService::meanAqiInArea(double latitude, double 
         if (distance > radiusKm) continue;
 
         const auto series = sensorSeries(sensor.id, start, stop);
+        if (!series.empty()) {
+            ++sensorsContributing;
+        }
         for (const auto& point : series) {
             aqiValues.push_back(point.aqi);
         }
     }
 
-    if (aqiValues.empty()) return std::nullopt;
+    if (aqiValues.empty()) {
+        return std::nullopt;
+    }
     const double sum = std::accumulate(aqiValues.begin(), aqiValues.end(), 0.0);
-    return sum / static_cast<double>(aqiValues.size());
+    return MeanAqiStats {
+        sum / static_cast<double>(aqiValues.size()),
+        sum,
+        aqiValues.size(),
+        sensorsContributing
+    };
 }
 
 std::vector<SensorSimilarity> AirAnalysisService::rankSensorsBySimilarity(const std::string& referenceSensor,
@@ -131,6 +151,52 @@ std::vector<SensorSimilarity> AirAnalysisService::rankSensorsBySimilarity(const 
         return a.score > b.score;
     });
     return result;
+}
+
+std::optional<SimilarityDebug> AirAnalysisService::explainSimilarity(const std::string& referenceSensor,
+    const std::string& comparedSensor, std::time_t start, std::time_t stop) {
+    if (referenceSensor == comparedSensor || !sensorAllowed(referenceSensor) || !sensorAllowed(comparedSensor)) {
+        return std::nullopt;
+    }
+
+    const auto referenceSeries = sensorSeries(referenceSensor, start, stop);
+    const auto comparedSeries = sensorSeries(comparedSensor, start, stop);
+    if (referenceSeries.empty() || comparedSeries.empty()) {
+        return std::nullopt;
+    }
+
+    std::map<std::time_t, double> refByTime;
+    for (const auto& point : referenceSeries) {
+        refByTime[point.epoch] = point.aqi;
+    }
+
+    double dot = 0.0;
+    double normRef = 0.0;
+    double normCmp = 0.0;
+    std::size_t overlap = 0;
+    for (const auto& point : comparedSeries) {
+        auto it = refByTime.find(point.epoch);
+        if (it == refByTime.end()) {
+            continue;
+        }
+        dot += it->second * point.aqi;
+        normRef += it->second * it->second;
+        normCmp += point.aqi * point.aqi;
+        ++overlap;
+    }
+    if (normRef == 0.0 || normCmp == 0.0 || overlap == 0) {
+        return std::nullopt;
+    }
+
+    return SimilarityDebug {
+        referenceSensor,
+        comparedSensor,
+        dot / (std::sqrt(normRef) * std::sqrt(normCmp)),
+        dot,
+        normRef,
+        normCmp,
+        overlap
+    };
 }
 
 std::optional<double> AirAnalysisService::estimateAqiAtPosition(double latitude, double longitude,
